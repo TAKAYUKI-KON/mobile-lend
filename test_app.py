@@ -9,7 +9,8 @@ from app import create_app
 def app(tmp_path):
     return create_app({"TESTING": True, "SECRET_KEY": "test", "DATABASE": str(tmp_path / "test.sqlite3"),
                        "MAIL_MODE": "file", "OUTBOX_PATH": str(tmp_path / "outbox"),
-                       "TEST_RECIPIENT": "verify@example.invalid", "BASE_URL": "http://localhost"})
+                       "TEST_RECIPIENT": "verify@example.invalid", "BASE_URL": "http://localhost",
+                       "DEMO_SCALE": False})
 
 @pytest.fixture()
 def client(app): return app.test_client()
@@ -79,3 +80,18 @@ def test_notification_link_lost_stops_device(client, app):
         db = app.get_db()
         assert db.execute("SELECT status FROM loans WHERE id=2").fetchone()[0] == "lost"
         assert db.execute("SELECT active FROM devices WHERE id=3").fetchone()[0] == 0
+
+def test_demo_scale_seed_is_idempotent(tmp_path):
+    database = str(tmp_path / "scale.sqlite3")
+    scaled = create_app({"TESTING": True, "SECRET_KEY": "test", "DATABASE": database,
+                         "DEMO_SCALE": True, "TEST_RECIPIENT": "verify@example.invalid"})
+    with scaled.app_context():
+        db = scaled.get_db()
+        assert db.execute("SELECT COUNT(id) FROM users").fetchone()[0] == 120
+        assert db.execute("SELECT COUNT(id) FROM devices").fetchone()[0] == 80
+        assert db.execute("SELECT COUNT(id) FROM loans WHERE status='borrowed'").fetchone()[0] == 42
+    scaled_again = create_app({"TESTING": True, "SECRET_KEY": "test", "DATABASE": database,
+                               "DEMO_SCALE": True, "TEST_RECIPIENT": "verify@example.invalid"})
+    with scaled_again.app_context():
+        assert scaled_again.get_db().execute("SELECT COUNT(id) FROM users").fetchone()[0] == 120
+        assert scaled_again.get_db().execute("SELECT COUNT(id) FROM devices").fetchone()[0] == 80

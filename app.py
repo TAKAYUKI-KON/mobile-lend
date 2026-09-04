@@ -46,6 +46,7 @@ def create_app(test_config=None):
         TEST_RECIPIENT=setting("MOBILEND_TEST_RECIPIENT"),
         ACTION_TOKEN_HOURS=int(setting("MOBILEND_ACTION_TOKEN_HOURS", "72")),
         OUTBOX_PATH=str(Path(app.instance_path) / "outbox"),
+        DEMO_SCALE=setting("MOBILEND_DEMO_SCALE", "1").lower() in ("1", "true", "yes"),
     )
     if test_config:
         app.config.update(test_config)
@@ -139,10 +140,66 @@ def create_app(test_config=None):
             db.execute("UPDATE users SET email=? WHERE role='user' AND retired=0 AND email=''", (app.config["TEST_RECIPIENT"],))
         db.commit()
 
+    def ensure_demo_scale():
+        """Fill a development database to 120 users and 80 devices without duplicates."""
+        db = get_db()
+        now = datetime.now().isoformat(timespec="seconds")
+        departments = ("営業部", "総務部", "開発部", "経理部", "人事部", "企画部", "カスタマーサポート部", "品質管理部")
+        demo_password_hash = generate_password_hash("User123!")
+        user_count = db.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+        demo_number = 1
+        while user_count < 120:
+            user_id = f"demo{demo_number:03d}"
+            if not db.execute("SELECT 1 FROM users WHERE user_id=?", (user_id,)).fetchone():
+                db.execute("""INSERT INTO users(user_id,name,password_hash,department,email,role,retired,created_at)
+                    VALUES(?,?,?,?,?,'user',?,?)""",
+                    (user_id, f"テスト 利用者{demo_number:03d}", demo_password_hash,
+                     departments[(demo_number - 1) % len(departments)], app.config.get("TEST_RECIPIENT", ""),
+                     1 if demo_number % 25 == 0 else 0, now))
+                user_count += 1
+            demo_number += 1
+
+        plan_ids = [row["id"] for row in db.execute("SELECT id FROM contract_plans ORDER BY id")]
+        device_count = db.execute("SELECT COUNT(*) FROM devices").fetchone()[0]
+        demo_number = 1
+        while device_count < 80:
+            dtype = "USB" if demo_number % 2 else "WiFi"
+            device_number = f"{dtype.upper()}-T{demo_number:03d}"
+            if not db.execute("SELECT 1 FROM devices WHERE device_number=?", (device_number,)).fetchone():
+                db.execute("""INSERT INTO devices(device_number,device_type,phone_number,plan_id,active,created_at)
+                    VALUES(?,?,?,?,1,?)""",
+                    (device_number, dtype, f"070-5000-{demo_number:04d}",
+                     plan_ids[(demo_number - 1) % len(plan_ids)], now))
+                device_count += 1
+            demo_number += 1
+
+        admin_id = db.execute("SELECT id FROM users WHERE role='admin' AND retired=0 ORDER BY id LIMIT 1").fetchone()[0]
+        borrowers = db.execute("SELECT id FROM users WHERE user_id LIKE 'demo%' AND retired=0 ORDER BY user_id LIMIT 55").fetchall()
+        devices = db.execute("SELECT id FROM devices WHERE device_number LIKE '%-T%' ORDER BY device_number LIMIT 55").fetchall()
+        today = date.today()
+        for index, (borrower, device_row) in enumerate(zip(borrowers, devices)):
+            if db.execute("SELECT 1 FROM loans WHERE device_id=?", (device_row["id"],)).fetchone():
+                continue
+            checkout = today - timedelta(days=(index % 18) + 2)
+            if index < 40:
+                due = today - timedelta(days=(index % 10) + 1) if index < 14 else today + timedelta(days=(index % 20) + 2)
+                status, returned_at = "borrowed", None
+                note = "大規模動作確認用（貸出中）"
+            else:
+                due = today - timedelta(days=2)
+                status, returned_at = "returned", str(today - timedelta(days=1))
+                note = "大規模動作確認用（返却済み）"
+            db.execute("""INSERT INTO loans(device_id,borrower_id,lent_by_id,checkout_date,due_date,returned_at,status,note,created_at)
+                VALUES(?,?,?,?,?,?,?,?,?)""",
+                (device_row["id"], borrower["id"], admin_id, str(checkout), str(due), returned_at, status, note, now))
+        db.commit()
+
     with app.app_context():
         if not Path(app.config["DATABASE"]).exists():
             init_db()
         migrate_db()
+        if app.config["DEMO_SCALE"]:
+            ensure_demo_scale()
 
     def login_required(view):
         @wraps(view)
