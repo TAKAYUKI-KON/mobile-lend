@@ -1,10 +1,15 @@
 import re
+from datetime import date, timedelta
+from email import policy
+from email.parser import BytesParser
 import pytest
 from app import create_app
 
 @pytest.fixture()
 def app(tmp_path):
-    return create_app({"TESTING": True, "SECRET_KEY": "test", "DATABASE": str(tmp_path / "test.sqlite3")})
+    return create_app({"TESTING": True, "SECRET_KEY": "test", "DATABASE": str(tmp_path / "test.sqlite3"),
+                       "MAIL_MODE": "file", "OUTBOX_PATH": str(tmp_path / "outbox"),
+                       "TEST_RECIPIENT": "verify@example.invalid", "BASE_URL": "http://localhost"})
 
 @pytest.fixture()
 def client(app): return app.test_client()
@@ -41,3 +46,36 @@ def test_checkout_and_return(client, app):
 
 def test_csrf_required(client):
     assert client.post("/login", data={"user_id": "admin01", "password": "Admin123!"}).status_code == 400
+
+def test_notification_link_extend_and_return(client, app):
+    login(client)
+    response = client.post("/loans/1/notify", data={"csrf_token": token(client, "/loans")}, follow_redirects=True)
+    assert "instance/outbox" in response.get_data(as_text=True)
+    message_path = next((__import__("pathlib").Path(app.config["OUTBOX_PATH"])).glob("*.eml"))
+    message = BytesParser(policy=policy.default).parsebytes(message_path.read_bytes())
+    assert message["To"] == "verify@example.invalid"
+    action_path = re.search(r"http://localhost(/loan-actions/[A-Za-z0-9_-]+)", message.get_content()).group(1)
+    assert "端末利用状況の登録" in client.get(action_path).get_data(as_text=True)
+
+    new_due = str(date.today() + timedelta(days=30))
+    response = client.post(action_path, data={"csrf_token": token(client, action_path), "action": "extend", "due_date": new_due}, follow_redirects=True)
+    assert "返却期限を延長しました" in response.get_data(as_text=True)
+    with app.app_context():
+        assert app.get_db().execute("SELECT due_date FROM loans WHERE id=1").fetchone()[0] == new_due
+
+    response = client.post(action_path, data={"csrf_token": token(client, action_path), "action": "returned"}, follow_redirects=True)
+    assert "返却を登録しました" in response.get_data(as_text=True)
+    with app.app_context():
+        assert app.get_db().execute("SELECT status FROM loans WHERE id=1").fetchone()[0] == "returned"
+
+def test_notification_link_lost_stops_device(client, app):
+    login(client)
+    client.post("/loans/2/notify", data={"csrf_token": token(client, "/loans")})
+    paths = sorted((__import__("pathlib").Path(app.config["OUTBOX_PATH"])).glob("*.eml"))
+    message = BytesParser(policy=policy.default).parsebytes(paths[-1].read_bytes())
+    action_path = re.search(r"http://localhost(/loan-actions/[A-Za-z0-9_-]+)", message.get_content()).group(1)
+    client.post(action_path, data={"csrf_token": token(client, action_path), "action": "lost"})
+    with app.app_context():
+        db = app.get_db()
+        assert db.execute("SELECT status FROM loans WHERE id=2").fetchone()[0] == "lost"
+        assert db.execute("SELECT active FROM devices WHERE id=3").fetchone()[0] == 0

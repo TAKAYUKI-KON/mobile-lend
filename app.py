@@ -1,7 +1,10 @@
 import os
 import secrets
 import sqlite3
+import hashlib
+import smtplib
 from datetime import date, datetime, timedelta
+from email.message import EmailMessage
 from functools import wraps
 from pathlib import Path
 
@@ -16,13 +19,36 @@ BASE_DIR = Path(__file__).resolve().parent
 
 def create_app(test_config=None):
     app = Flask(__name__, instance_relative_config=True)
+    Path(app.instance_path).mkdir(parents=True, exist_ok=True)
+    local_env = {}
+    local_env_path = Path(app.instance_path) / "local.env"
+    if local_env_path.exists():
+        for line in local_env_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                key, value = line.split("=", 1)
+                local_env[key.strip()] = value.strip().strip('"').strip("'")
+
+    def setting(name, default=""):
+        return os.environ.get(name, local_env.get(name, default))
+
     app.config.from_mapping(
-        SECRET_KEY=os.environ.get("MOBILEND_SECRET_KEY", "dev-only-change-me"),
+        SECRET_KEY=setting("MOBILEND_SECRET_KEY", "dev-only-change-me"),
         DATABASE=str(Path(app.instance_path) / "mobilend.sqlite3"),
+        BASE_URL=setting("MOBILEND_BASE_URL", "http://127.0.0.1:5000").rstrip("/"),
+        MAIL_MODE=setting("MOBILEND_MAIL_MODE", "file").lower(),
+        MAIL_FROM=setting("MOBILEND_MAIL_FROM", "mobilend@localhost"),
+        SMTP_HOST=setting("MOBILEND_SMTP_HOST"),
+        SMTP_PORT=int(setting("MOBILEND_SMTP_PORT", "587")),
+        SMTP_USERNAME=setting("MOBILEND_SMTP_USERNAME"),
+        SMTP_PASSWORD=setting("MOBILEND_SMTP_PASSWORD"),
+        SMTP_USE_TLS=setting("MOBILEND_SMTP_USE_TLS", "1").lower() in ("1", "true", "yes"),
+        TEST_RECIPIENT=setting("MOBILEND_TEST_RECIPIENT"),
+        ACTION_TOKEN_HOURS=int(setting("MOBILEND_ACTION_TOKEN_HOURS", "72")),
+        OUTBOX_PATH=str(Path(app.instance_path) / "outbox"),
     )
     if test_config:
         app.config.update(test_config)
-    Path(app.instance_path).mkdir(parents=True, exist_ok=True)
 
     def get_db():
         if "db" not in g:
@@ -51,8 +77,8 @@ def create_app(test_config=None):
         ]
         for user_id, name, password, dept, role, retired in users:
             db.execute(
-                "INSERT INTO users(user_id,name,password_hash,department,role,retired,created_at) VALUES(?,?,?,?,?,?,?)",
-                (user_id, name, generate_password_hash(password), dept, role, retired, now),
+                "INSERT INTO users(user_id,name,password_hash,department,email,role,retired,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                (user_id, name, generate_password_hash(password), dept, "", role, retired, now),
             )
         plans = [("5GB/月", "少量利用向け"), ("10GB/月", "標準USB向け"),
                  ("無制限", "大容量利用向け"), ("50GB/月", "標準WiFi向け")]
@@ -85,9 +111,38 @@ def create_app(test_config=None):
                        tuple(str(x) if isinstance(x, date) else x for x in row) + (now,))
         db.commit()
 
+    def migrate_db():
+        """Apply small, idempotent migrations to databases created by older versions."""
+        db = get_db()
+        columns = {row["name"] for row in db.execute("PRAGMA table_info(users)")}
+        if "email" not in columns:
+            db.execute("ALTER TABLE users ADD COLUMN email TEXT NOT NULL DEFAULT ''")
+        db.executescript("""
+            CREATE TABLE IF NOT EXISTS loan_action_tokens (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                loan_id INTEGER NOT NULL REFERENCES loans(id),
+                token_hash TEXT NOT NULL UNIQUE,
+                expires_at TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                last_used_at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS loan_action_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                loan_id INTEGER NOT NULL REFERENCES loans(id),
+                action TEXT NOT NULL CHECK(action IN ('notified','extended','returned','lost')),
+                old_due_date TEXT,
+                new_due_date TEXT,
+                acted_at TEXT NOT NULL
+            );
+        """)
+        if app.config.get("TEST_RECIPIENT"):
+            db.execute("UPDATE users SET email=? WHERE role='user' AND retired=0 AND email=''", (app.config["TEST_RECIPIENT"],))
+        db.commit()
+
     with app.app_context():
         if not Path(app.config["DATABASE"]).exists():
             init_db()
+        migrate_db()
 
     def login_required(view):
         @wraps(view)
@@ -152,6 +207,65 @@ def create_app(test_config=None):
             CASE WHEN l.status='borrowed' AND l.due_date < date('now','localtime') THEN 1 ELSE 0 END overdue
             FROM loans l JOIN devices d ON d.id=l.device_id JOIN users u ON u.id=l.borrower_id {where}
             ORDER BY CASE WHEN l.status='borrowed' THEN 0 ELSE 1 END,l.due_date""", params).fetchall()
+
+    def write_or_send_email(message, loan_id):
+        if app.config["MAIL_MODE"] == "smtp":
+            if not app.config["SMTP_HOST"]:
+                raise RuntimeError("MOBILEND_SMTP_HOSTが設定されていません。")
+            with smtplib.SMTP(app.config["SMTP_HOST"], app.config["SMTP_PORT"], timeout=20) as smtp:
+                smtp.ehlo()
+                if app.config["SMTP_USE_TLS"]:
+                    smtp.starttls()
+                    smtp.ehlo()
+                if app.config["SMTP_USERNAME"]:
+                    smtp.login(app.config["SMTP_USERNAME"], app.config["SMTP_PASSWORD"])
+                smtp.send_message(message)
+            return "smtp"
+        outbox = Path(app.config["OUTBOX_PATH"])
+        outbox.mkdir(parents=True, exist_ok=True)
+        filename = outbox / f"loan-{loan_id}-{datetime.now().strftime('%Y%m%d%H%M%S%f')}.eml"
+        filename.write_bytes(message.as_bytes())
+        return str(filename)
+
+    def create_action_email(loan):
+        raw_token = secrets.token_urlsafe(32)
+        token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+        now = datetime.now()
+        expires = now + timedelta(hours=app.config["ACTION_TOKEN_HOURS"])
+        action_url = f"{app.config['BASE_URL']}/loan-actions/{raw_token}"
+        message = EmailMessage()
+        message["Subject"] = f"【MobiLend】{loan['device_number']} の利用状況をご確認ください"
+        message["From"] = app.config["MAIL_FROM"]
+        message["To"] = loan["email"]
+        message.set_content(f"""{loan['borrower']} 様
+
+現在貸出中のモバイル端末について、利用状況をご確認ください。
+
+端末番号: {loan['device_number']}
+端末タイプ: {loan['device_type']}
+返却期限: {loan['due_date']}
+
+以下のURLから、返却・紛失・期限延長を登録できます。
+{action_url}
+
+このURLの有効期限は {expires.strftime('%Y-%m-%d %H:%M')} です。
+心当たりがない場合は情報企画課へご連絡ください。
+""")
+        db = get_db()
+        cursor = db.execute(
+            "INSERT INTO loan_action_tokens(loan_id,token_hash,expires_at,created_at) VALUES(?,?,?,?)",
+            (loan["id"], token_hash, expires.isoformat(timespec="seconds"), now.isoformat(timespec="seconds")),
+        )
+        db.execute("INSERT INTO loan_action_log(loan_id,action,old_due_date,new_due_date,acted_at) VALUES(?,'notified',?,?,?)",
+                   (loan["id"], loan["due_date"], loan["due_date"], now.isoformat(timespec="seconds")))
+        db.commit()
+        try:
+            delivery = write_or_send_email(message, loan["id"])
+        except Exception:
+            db.execute("DELETE FROM loan_action_tokens WHERE id=?", (cursor.lastrowid,))
+            db.commit()
+            raise
+        return delivery
 
     @app.get("/dashboard")
     @login_required
@@ -266,17 +380,90 @@ def create_app(test_config=None):
     @admin_required
     def lose_loan(loan_id): return finish_loan(loan_id, "lost")
 
+    @app.post("/loans/<int:loan_id>/notify")
+    @admin_required
+    def notify_borrower(loan_id):
+        loan = get_db().execute("""SELECT l.*,d.device_number,d.device_type,u.name borrower,u.email
+            FROM loans l JOIN devices d ON d.id=l.device_id JOIN users u ON u.id=l.borrower_id
+            WHERE l.id=? AND l.status='borrowed'""", (loan_id,)).fetchone()
+        if not loan:
+            flash("貸出中の記録が見つかりません。", "error")
+        elif not loan["email"]:
+            flash("利用者のメールアドレスが登録されていません。", "error")
+        else:
+            try:
+                delivery = create_action_email(loan)
+                if delivery == "smtp":
+                    flash(f"{loan['borrower']}さんへ確認メールを送信しました。", "success")
+                else:
+                    flash("検証用メールをinstance/outboxに出力しました。", "warning")
+            except (OSError, RuntimeError, smtplib.SMTPException) as exc:
+                app.logger.exception("Loan notification failed")
+                flash(f"メールを送信できませんでした: {exc}", "error")
+        return redirect(url_for("loans"))
+
+    def get_action_loan(raw_token):
+        token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+        row = get_db().execute("""SELECT l.*,t.id token_id,t.expires_at,d.device_number,d.device_type,
+            u.name borrower,u.department FROM loan_action_tokens t
+            JOIN loans l ON l.id=t.loan_id JOIN devices d ON d.id=l.device_id JOIN users u ON u.id=l.borrower_id
+            WHERE t.token_hash=?""", (token_hash,)).fetchone()
+        if not row:
+            abort(404)
+        if datetime.fromisoformat(row["expires_at"]) < datetime.now():
+            abort(410)
+        return row
+
+    @app.route("/loan-actions/<token>", methods=["GET", "POST"])
+    def loan_action(token):
+        loan = get_action_loan(token)
+        if request.method == "POST":
+            if loan["status"] != "borrowed":
+                flash("この貸出はすでに処理済みです。", "warning")
+                return redirect(url_for("loan_action", token=token))
+            action = request.form.get("action")
+            db, now = get_db(), datetime.now().isoformat(timespec="seconds")
+            if action == "extend":
+                try:
+                    new_due = date.fromisoformat(request.form.get("due_date", ""))
+                    old_due = date.fromisoformat(loan["due_date"])
+                except ValueError:
+                    flash("新しい返却期限を入力してください。", "error")
+                    return redirect(url_for("loan_action", token=token))
+                if new_due <= old_due or new_due < date.today():
+                    flash("現在の返却期限より後の日付を指定してください。", "error")
+                    return redirect(url_for("loan_action", token=token))
+                db.execute("UPDATE loans SET due_date=? WHERE id=? AND status='borrowed'", (str(new_due), loan["id"]))
+                db.execute("INSERT INTO loan_action_log(loan_id,action,old_due_date,new_due_date,acted_at) VALUES(?,'extended',?,?,?)",
+                           (loan["id"], loan["due_date"], str(new_due), now))
+                flash("返却期限を延長しました。", "success")
+            elif action in ("returned", "lost"):
+                db.execute("UPDATE loans SET status=?,returned_at=? WHERE id=? AND status='borrowed'",
+                           (action, date.today().isoformat() if action == "returned" else None, loan["id"]))
+                if action == "lost":
+                    db.execute("UPDATE devices SET active=0 WHERE id=?", (loan["device_id"],))
+                db.execute("INSERT INTO loan_action_log(loan_id,action,old_due_date,new_due_date,acted_at) VALUES(?,?,?,?,?)",
+                           (loan["id"], action, loan["due_date"], loan["due_date"], now))
+                flash("返却を登録しました。" if action == "returned" else "紛失を登録しました。情報企画課へもご連絡ください。",
+                      "success" if action == "returned" else "warning")
+            else:
+                abort(400)
+            db.execute("UPDATE loan_action_tokens SET last_used_at=? WHERE id=?", (now, loan["token_id"]))
+            db.commit()
+            return redirect(url_for("loan_action", token=token))
+        return render_template("loan_action.html", loan=loan, token=token)
+
     @app.route("/users", methods=["GET", "POST"])
     @admin_required
     def users():
         db = get_db()
         if request.method == "POST":
-            uid, name, password, dept, role = (request.form.get(k, "").strip() for k in ("user_id", "name", "password", "department", "role"))
-            if not all((uid, name, password, dept, role)) or len(password) < 8 or role not in ("admin", "user"):
+            uid, name, password, dept, email, role = (request.form.get(k, "").strip() for k in ("user_id", "name", "password", "department", "email", "role"))
+            if not all((uid, name, password, dept, email, role)) or len(password) < 8 or role not in ("admin", "user") or "@" not in email:
                 flash("入力内容を確認してください（パスワードは8文字以上）。", "error")
             else:
                 try:
-                    db.execute("INSERT INTO users(user_id,name,password_hash,department,role,retired,created_at) VALUES(?,?,?,?,?,0,?)", (uid, name, generate_password_hash(password), dept, role, datetime.now().isoformat(timespec="seconds")))
+                    db.execute("INSERT INTO users(user_id,name,password_hash,department,email,role,retired,created_at) VALUES(?,?,?,?,?,?,0,?)", (uid, name, generate_password_hash(password), dept, email, role, datetime.now().isoformat(timespec="seconds")))
                     db.commit(); flash("ユーザーを登録しました。", "success")
                 except sqlite3.IntegrityError: flash("ユーザーIDはすでに登録されています。", "error")
         return render_template("users.html", users=db.execute("SELECT * FROM users ORDER BY user_id").fetchall())
@@ -293,8 +480,9 @@ def create_app(test_config=None):
     @app.errorhandler(400)
     @app.errorhandler(403)
     @app.errorhandler(404)
+    @app.errorhandler(410)
     def error_page(error):
-        messages = {400: "不正なリクエストです。", 403: "この操作を行う権限がありません。", 404: "ページが見つかりません。"}
+        messages = {400: "不正なリクエストです。", 403: "この操作を行う権限がありません。", 404: "ページが見つかりません。", 410: "このURLの有効期限は終了しました。"}
         return render_template("error.html", code=error.code, message=messages[error.code]), error.code
 
     app.get_db = get_db

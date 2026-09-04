@@ -7,6 +7,7 @@
 - 管理者・一般利用者のログインと権限制御
 - 端末台帳、契約プラン、ユーザーの管理
 - 貸出、返却、紛失の登録と履歴保持
+- 貸出利用者への確認メールと、有効期限付きURLからの返却・紛失・期限延長
 - 返却期限超過の動的表示
 - 退職済みユーザーのログイン・新規貸出防止
 - CSRF対策、パスワードハッシュ、パラメータ化SQL
@@ -28,6 +29,32 @@ python app.py
 |---|---|---|
 | 管理者 | `admin01` | `Admin123!` |
 | 利用者 | `user01` | `User123!` |
+
+## メール通知
+
+管理者で「貸出履歴」を開き、貸出中レコードの「メール」を押すと、利用者へ確認URLを発行します。URLは既定で72時間有効で、対象の貸出1件について次の操作だけを許可します。
+
+- 返却登録
+- 紛失登録（端末を利用停止）
+- 現在より後の日付への返却期限延長
+
+ローカル設定はGit管理外の `instance/local.env` に記述します。初期状態の `MOBILEND_MAIL_MODE=file` では、送信内容を `instance/outbox/*.eml` に保存するため、SMTPなしで確認できます。
+
+実際に送信する場合は、社内メール管理者から案内された値を設定してください。
+
+```dotenv
+MOBILEND_MAIL_MODE=smtp
+MOBILEND_BASE_URL=https://アプリの公開URL
+MOBILEND_MAIL_FROM=mobilend@example.co.jp
+MOBILEND_SMTP_HOST=smtp.example.co.jp
+MOBILEND_SMTP_PORT=587
+MOBILEND_SMTP_USE_TLS=1
+MOBILEND_SMTP_USERNAME=ユーザー名
+MOBILEND_SMTP_PASSWORD=パスワード
+MOBILEND_ACTION_TOKEN_HOURS=72
+```
+
+環境変数に同名の設定がある場合は、`instance/local.env` より環境変数を優先します。メールアドレスやSMTP認証情報をGitへコミットしないでください。
 
 ## テスト
 

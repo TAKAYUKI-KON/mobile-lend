@@ -1,5 +1,5 @@
 <!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{% block title %}MobiLend{% endblock %} | 端末管理</title><link rel="stylesheet" href="{{ url_for('static',filename='style.css') }}"></head>
+<title>{% block title %}MobiLend{% endblock %} | 端末管理</title><link rel="stylesheet" href="{{ url_for('static',filename='style.css') }}"><link rel="stylesheet" href="{{ url_for('static',filename='action.css') }}"></head>
 <body>{% if g.user %}<header><a class="brand" href="{{ url_for('dashboard') }}"><span>ML</span>MobiLend</a><button class="menu" onclick="document.querySelector('nav').classList.toggle('open')">☰</button><nav>
 <a href="{{ url_for('dashboard') }}">ダッシュボード</a><a href="{{ url_for('devices') }}">端末台帳</a><a href="{{ url_for('loans') }}">貸出履歴</a>
 {% if g.user.role=='admin' %}<a href="{{ url_for('plans') }}">契約プラン</a><a href="{{ url_for('users') }}">ユーザー</a>{% endif %}</nav>

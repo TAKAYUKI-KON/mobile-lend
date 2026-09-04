@@ -1,3 +1,5 @@
+DROP TABLE IF EXISTS loan_action_log;
+DROP TABLE IF EXISTS loan_action_tokens;
 DROP TABLE IF EXISTS loans;
 DROP TABLE IF EXISTS devices;
 DROP TABLE IF EXISTS contract_plans;
@@ -5,7 +7,7 @@ DROP TABLE IF EXISTS users;
 
 CREATE TABLE users (
  id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL UNIQUE, name TEXT NOT NULL,
- password_hash TEXT NOT NULL, department TEXT NOT NULL, role TEXT NOT NULL CHECK(role IN ('admin','user')),
+ password_hash TEXT NOT NULL, department TEXT NOT NULL, email TEXT NOT NULL DEFAULT '', role TEXT NOT NULL CHECK(role IN ('admin','user')),
  retired INTEGER NOT NULL DEFAULT 0 CHECK(retired IN (0,1)), created_at TEXT NOT NULL
 );
 CREATE TABLE contract_plans (
@@ -25,3 +27,12 @@ CREATE TABLE loans (
  CHECK(due_date >= checkout_date)
 );
 CREATE UNIQUE INDEX one_active_loan_per_device ON loans(device_id) WHERE status='borrowed';
+CREATE TABLE loan_action_tokens (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, loan_id INTEGER NOT NULL REFERENCES loans(id),
+ token_hash TEXT NOT NULL UNIQUE, expires_at TEXT NOT NULL, created_at TEXT NOT NULL, last_used_at TEXT
+);
+CREATE TABLE loan_action_log (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, loan_id INTEGER NOT NULL REFERENCES loans(id),
+ action TEXT NOT NULL CHECK(action IN ('notified','extended','returned','lost')),
+ old_due_date TEXT, new_due_date TEXT, acted_at TEXT NOT NULL
+);
