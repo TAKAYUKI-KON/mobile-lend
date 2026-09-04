@@ -175,7 +175,7 @@ def create_app(test_config=None):
 
         admin_id = db.execute("SELECT id FROM users WHERE role='admin' AND retired=0 ORDER BY id LIMIT 1").fetchone()[0]
         borrowers = db.execute("SELECT id FROM users WHERE user_id LIKE 'demo%' AND retired=0 ORDER BY user_id LIMIT 55").fetchall()
-        devices = db.execute("SELECT id FROM devices WHERE device_number LIKE '%-T%' ORDER BY device_number LIMIT 55").fetchall()
+        devices = db.execute("SELECT id FROM devices WHERE device_number LIKE '%-T%' ORDER BY id LIMIT 55").fetchall()
         today = date.today()
         for index, (borrower, device_row) in enumerate(zip(borrowers, devices)):
             if db.execute("SELECT 1 FROM loans WHERE device_id=?", (device_row["id"],)).fetchone():
@@ -332,7 +332,14 @@ def create_app(test_config=None):
                 SUM(CASE WHEN active=1 AND NOT EXISTS(SELECT 1 FROM loans WHERE device_id=devices.id AND status='borrowed') THEN 1 ELSE 0 END) available,
                 SUM(CASE WHEN EXISTS(SELECT 1 FROM loans WHERE device_id=devices.id AND status='borrowed') THEN 1 ELSE 0 END) borrowed FROM devices""").fetchone()
             overdue = get_db().execute("SELECT COUNT(*) FROM loans WHERE status='borrowed' AND due_date < date('now','localtime')").fetchone()[0]
-            return render_template("dashboard.html", counts=counts, overdue=overdue, loans=loan_query("WHERE l.status='borrowed'"))
+            type_counts = get_db().execute("""SELECT device_type,COUNT(*) total,
+                SUM(CASE WHEN active=1 AND NOT EXISTS(
+                    SELECT 1 FROM loans WHERE device_id=devices.id AND status='borrowed'
+                ) THEN 1 ELSE 0 END) available
+                FROM devices GROUP BY device_type
+                ORDER BY CASE device_type WHEN 'USB' THEN 0 ELSE 1 END""").fetchall()
+            return render_template("dashboard.html", counts=counts, overdue=overdue,
+                                   type_counts=type_counts, loans=loan_query("WHERE l.status='borrowed'"))
         return render_template("dashboard.html", loans=loan_query("WHERE l.borrower_id=? AND l.status='borrowed'", (g.user["id"],)))
 
     @app.route("/devices", methods=["GET", "POST"])

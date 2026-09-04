@@ -25,6 +25,8 @@ def login(client, uid="admin01", password="Admin123!"):
 def test_admin_login_and_overdue(client):
     body = login(client).get_data(as_text=True)
     assert "ダッシュボード" in body and "期限超過" in body and "WIFI-001" in body
+    assert 'data-device-type="USB"' in body and 'data-device-type="WiFi"' in body
+    assert "端末タイプ別内訳" in body and "総台数" in body and "貸出可能" in body
 
 def test_user_isolation_and_forbidden(client):
     login(client, "user01", "User123!")
