@@ -16,6 +16,32 @@ from werkzeug.security import check_password_hash, generate_password_hash
 
 BASE_DIR = Path(__file__).resolve().parent
 
+SAMURAI_NAMES = (
+    "織田 信長", "豊臣 秀吉", "徳川 家康", "武田 信玄", "上杉 謙信",
+    "毛利 元就", "伊達 政宗", "北条 氏康", "島津 義弘", "長宗我部 元親",
+    "明智 光秀", "柴田 勝家", "丹羽 長秀", "滝川 一益", "前田 利家",
+    "佐々 成政", "豊臣 秀長", "加藤 清正", "福島 正則", "石田 三成",
+    "大谷 吉継", "黒田 官兵衛", "竹中 半兵衛", "山内 一豊", "蜂須賀 小六",
+    "宇喜多 秀家", "小早川 秀秋", "小西 行長", "増田 長盛", "長束 正家",
+    "浅野 長政", "前田 玄以", "直江 兼続", "上杉 景勝", "最上 義光",
+    "蒲生 氏郷", "堀 秀政", "森 長可", "森 蘭丸", "池田 恒興",
+    "池田 輝政", "細川 忠興", "細川 幽斎", "筒井 順慶", "松永 久秀",
+    "三好 長慶", "足利 義昭", "足利 義輝", "今川 義元", "太原 雪斎",
+    "山県 昌景", "馬場 信春", "高坂 昌信", "内藤 昌豊", "真田 昌幸",
+    "真田 信繁", "真田 信之", "武田 勝頼", "甘利 虎泰", "秋山 信友",
+    "柿崎 景家", "甘粕 景持", "宇佐美 定満", "斎藤 朝信", "本庄 繁長",
+    "北条 高広", "長尾 政景", "村上 義清", "斎藤 道三", "斎藤 義龍",
+    "朝倉 義景", "朝倉 宗滴", "浅井 長政", "藤堂 高虎", "京極 高次",
+    "六角 承禎", "尼子 経久", "尼子 晴久", "山中 鹿介", "吉川 元春",
+    "小早川 隆景", "毛利 輝元", "清水 宗治", "陶 晴賢", "大内 義隆",
+    "鍋島 直茂", "龍造寺 隆信", "立花 宗茂", "立花 道雪", "高橋 紹運",
+    "大友 宗麟", "島津 義久", "島津 家久", "島津 歳久", "伊東 義祐",
+    "相良 義陽", "有馬 晴信", "大村 純忠", "松浦 隆信", "長宗我部 盛親",
+    "片倉 小十郎", "伊達 成実", "鬼庭 左月斎", "蘆名 盛氏", "佐竹 義重",
+    "佐竹 義宣", "北条 氏政", "北条 氏直", "北条 綱成", "風魔 小太郎",
+    "本多 忠勝", "榊原 康政", "井伊 直政", "酒井 忠次", "鳥居 元忠",
+)
+
 
 def create_app(test_config=None):
     app = Flask(__name__, instance_relative_config=True)
@@ -151,13 +177,17 @@ def create_app(test_config=None):
         while user_count < 120:
             user_id = f"demo{demo_number:03d}"
             if not db.execute("SELECT 1 FROM users WHERE user_id=?", (user_id,)).fetchone():
+                display_name = SAMURAI_NAMES[(demo_number - 1) % len(SAMURAI_NAMES)]
                 db.execute("""INSERT INTO users(user_id,name,password_hash,department,email,role,retired,created_at)
                     VALUES(?,?,?,?,?,'user',?,?)""",
-                    (user_id, f"テスト 利用者{demo_number:03d}", demo_password_hash,
+                    (user_id, display_name, demo_password_hash,
                      departments[(demo_number - 1) % len(departments)], app.config.get("TEST_RECIPIENT", ""),
                      1 if demo_number % 25 == 0 else 0, now))
                 user_count += 1
             demo_number += 1
+
+        for index, display_name in enumerate(SAMURAI_NAMES, start=1):
+            db.execute("UPDATE users SET name=? WHERE user_id=?", (display_name, f"demo{index:03d}"))
 
         plan_ids = [row["id"] for row in db.execute("SELECT id FROM contract_plans ORDER BY id")]
         device_count = db.execute("SELECT COUNT(*) FROM devices").fetchone()[0]

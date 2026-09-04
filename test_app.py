@@ -92,6 +92,9 @@ def test_demo_scale_seed_is_idempotent(tmp_path):
         assert db.execute("SELECT COUNT(id) FROM users").fetchone()[0] == 120
         assert db.execute("SELECT COUNT(id) FROM devices").fetchone()[0] == 80
         assert db.execute("SELECT COUNT(id) FROM loans WHERE status='borrowed'").fetchone()[0] == 42
+        assert db.execute("SELECT name FROM users WHERE user_id='demo001'").fetchone()[0] == "織田 信長"
+        assert db.execute("SELECT COUNT(DISTINCT name) FROM users WHERE user_id LIKE 'demo%'").fetchone()[0] == 115
+        assert db.execute("SELECT COUNT(id) FROM users WHERE name LIKE 'テスト 利用者%'").fetchone()[0] == 0
     scaled_again = create_app({"TESTING": True, "SECRET_KEY": "test", "DATABASE": database,
                                "DEMO_SCALE": True, "TEST_RECIPIENT": "verify@example.invalid"})
     with scaled_again.app_context():
