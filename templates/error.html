@@ -1,0 +1,1 @@
+{% extends 'base.html' %}{% block title %}エラー {{code}}{% endblock %}{% block content %}<section class="error-page"><strong>{{code}}</strong><h1>{{message}}</h1><a class="button" href="{{url_for('dashboard') if g.user else url_for('login')}}">戻る</a></section>{% endblock %}

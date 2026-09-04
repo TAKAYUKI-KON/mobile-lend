@@ -1,0 +1,4 @@
+{% extends 'base.html' %}{% block title %}ログイン{% endblock %}{% block content %}
+<section class="login-card"><div class="login-mark">ML</div><p class="eyebrow">MOBILE ASSET CONTROL</p><h1>MobiLend</h1><p class="muted">モバイル端末貸出管理システム</p>
+<form method="post" class="stack"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><label>ユーザーID<input name="user_id" required autofocus placeholder="例: admin01"></label><label>パスワード<input type="password" name="password" required placeholder="パスワードを入力"></label><button class="primary">ログイン</button></form>
+<details><summary>デモ用アカウント</summary><p><code>admin01 / Admin123!</code><br><code>user01 / User123!</code></p></details></section>{% endblock %}
