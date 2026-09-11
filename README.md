@@ -27,6 +27,12 @@ python app.py
 
 開発環境では操作感の確認用として、合計120ユーザー・80端末まで自動補充します。`demo001`～`demo115` の表示名には重複しない戦国武将名を割り当てています。追加データには貸出中40件（うち期限超過14件）と返却済み15件が含まれます。この補充を無効にする場合は `MOBILEND_DEMO_SCALE=0` を設定してください。
 
+GitHubで確認できる公開用テストデータは `fixtures/demo_users.csv` と `fixtures/demo_devices.csv` に収録しています。メールアドレス、パスワード、パスワードハッシュ、内部DB ID、部署、電話番号は含みません。ローカルDBの内容から安全な列だけを再出力する場合は、次を実行します。
+
+```powershell
+python scripts/export_public_fixtures.py
+```
+
 | 権限 | ユーザーID | パスワード |
 |---|---|---|
 | 管理者 | `admin01` | `Admin123!` |

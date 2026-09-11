@@ -1,9 +1,11 @@
 import re
+import csv
 from datetime import date, timedelta
 from email import policy
 from email.parser import BytesParser
 import pytest
 from app import create_app
+from scripts.export_public_fixtures import export_fixtures
 
 @pytest.fixture()
 def app(tmp_path):
@@ -100,3 +102,16 @@ def test_demo_scale_seed_is_idempotent(tmp_path):
     with scaled_again.app_context():
         assert scaled_again.get_db().execute("SELECT COUNT(id) FROM users").fetchone()[0] == 120
         assert scaled_again.get_db().execute("SELECT COUNT(id) FROM devices").fetchone()[0] == 80
+
+def test_public_fixture_export_excludes_sensitive_columns(app, tmp_path):
+    output = tmp_path / "fixtures"
+    counts = export_fixtures(output, app)
+    assert counts == {"demo_users.csv": 5, "demo_devices.csv": 5}
+    with (output / "demo_users.csv").open(encoding="utf-8-sig", newline="") as source:
+        headers = next(csv.reader(source))
+    assert headers == ["user_id", "name", "role", "retired"]
+    assert "email" not in headers and "password_hash" not in headers and "id" not in headers
+    with (output / "demo_devices.csv").open(encoding="utf-8-sig", newline="") as source:
+        device_headers = next(csv.reader(source))
+    assert device_headers == ["device_number", "device_type", "contract_plan", "active"]
+    assert "phone_number" not in device_headers
